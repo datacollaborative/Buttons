@@ -1553,15 +1553,15 @@ DataTable.Api.register( 'buttons.info()', function ( title, message, time ) {
 
 // Get data from the table for export - this is common to a number of plug-in
 // buttons so it is included in the Buttons core library
-DataTable.Api.register( 'buttons.exportData()', function ( options ) {
+DataTable.Api.register( 'buttons.exportData()', function ( options, callback ) {
 	if ( this.context.length ) {
-		return _exportData( new DataTable.Api( this.context[0] ), options );
+		return _exportData( new DataTable.Api( this.context[0] ), options, callback );
 	}
 } );
 
 
 var _exportTextarea = $('<textarea/>')[0];
-var _exportData = function ( dt, inOpts )
+var _exportData = function ( dt, inOpts, callback )
 {
 	var config = $.extend( true, {}, {
 		rows:           null,
@@ -1629,6 +1629,61 @@ var _exportData = function ( dt, inOpts )
 		} ).toArray() :
 		null;
 
+	try {
+		var settings = dt.settings()[0];
+
+		if(settings.ajax && settings.ajax.url){
+			var preColSearch = settings.aoPreSearchCols;
+
+			return $.ajax({
+				data: {
+					export: true,
+					search: dt.search(),
+					columns: settings.aoColumns.reduce(function(columns, column, i){
+						if(config.columns.indexOf(i) === -1){
+							return columns;
+						}
+
+						var columnSearch = preColSearch[i];
+
+						columns.push({
+							data: column.mData,
+							name: column.sName,
+							searchable: column.bSearchable,
+							orderable: column.bSortable,
+							search: {
+								value: columnSearch.sSearch,
+								regex: columnSearch.bRegex
+							}
+						});
+
+						return columns;
+					}, []),
+					order: dt.table().order().map(function(order){
+						return {
+							column: order[0],
+							dir: order[1]
+						}
+					})
+				},
+				success: function(results){
+					callback(null, {
+						header: header,
+						footer: footer,
+						body: results.data
+					});
+				},
+				dataType: 'json',
+				cache: false,
+				type: settings.sServerMethod,
+				url: settings.ajax.url,
+				error: function (xhr, error, thrown) {
+					callback(thrown);
+				}
+			});
+		}
+	}catch(_){ }
+
 	var rowIndexes = dt.rows( config.rows, config.modifier ).indexes().toArray();
 	var selectedCells = dt.cells( rowIndexes, config.columns );
 	var cells = selectedCells
@@ -1654,10 +1709,18 @@ var _exportData = function ( dt, inOpts )
 		body[i] = row;
 	}
 
+	if(callback){
+		return callback(null, {
+			header: header,
+			footer: footer,
+			body: body
+		});
+	}
+
 	return {
 		header: header,
 		footer: footer,
-		body:   body
+		body: body
 	};
 };
 

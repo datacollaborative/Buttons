@@ -314,46 +314,55 @@ var _newLine = function ( config )
  * @param	{object}				config Button configuration
  * @return {object}							 The data to export
  */
-var _exportData = function ( dt, config )
+var _exportData = function ( dt, config, callback )
 {
-	var newLine = _newLine( config );
-	var data = dt.buttons.exportData( config.exportOptions );
-	var boundary = config.fieldBoundary;
-	var separator = config.fieldSeparator;
-	var reBoundary = new RegExp( boundary, 'g' );
-	var escapeChar = config.escapeChar !== undefined ?
-		config.escapeChar :
-		'\\';
-	var join = function ( a ) {
-		var s = '';
-
-		// If there is a field boundary, then we might need to escape it in
-		// the source data
-		for ( var i=0, ien=a.length ; i<ien ; i++ ) {
-			if ( i > 0 ) {
-				s += separator;
+	dt.buttons.exportData( config.exportOptions, function(err, data){
+		if(err){
+			if(callback){
+				return callback(err);
 			}
 
-			s += boundary ?
-				boundary + ('' + a[i]).replace( reBoundary, escapeChar+boundary ) + boundary :
-				a[i];
+			throw err;
 		}
 
-		return s;
-	};
+		var newLine = _newLine( config );
+		var boundary = config.fieldBoundary;
+		var separator = config.fieldSeparator;
+		var reBoundary = new RegExp( boundary, 'g' );
+		var escapeChar = config.escapeChar !== undefined ?
+			config.escapeChar :
+			'\\';
+		var join = function ( a ) {
+			var s = '';
 
-	var header = config.header ? join( data.header )+newLine : '';
-	var footer = config.footer && data.footer ? newLine+join( data.footer ) : '';
-	var body = [];
+			// If there is a field boundary, then we might need to escape it in
+			// the source data
+			for ( var i=0, ien=a.length ; i<ien ; i++ ) {
+				if ( i > 0 ) {
+					s += separator;
+				}
 
-	for ( var i=0, ien=data.body.length ; i<ien ; i++ ) {
-		body.push( join( data.body[i] ) );
-	}
+				s += boundary ?
+					boundary + ('' + a[i]).replace( reBoundary, escapeChar+boundary ) + boundary :
+					a[i];
+			}
 
-	return {
-		str: header + body.join( newLine ) + footer,
-		rows: body.length
-	};
+			return s;
+		};
+
+		var header = config.header ? join( data.header )+newLine : '';
+		var footer = config.footer && data.footer ? newLine+join( data.footer ) : '';
+		var body = [];
+
+		for ( var i=0, ien=data.body.length ; i<ien ; i++ ) {
+			body.push( join( data.body[i] ) );
+		}
+
+		callback(null, {
+			str: header + body.join( newLine ) + footer,
+			rows: body.length
+		});
+	});
 };
 
 /**
@@ -827,90 +836,98 @@ DataTable.ext.buttons.copyHtml5 = {
 	},
 
 	action: function ( e, dt, button, config ) {
+		var that = this;
+
 		this.processing( true );
 
-		var that = this;
-		var exportData = _exportData( dt, config );
-		var output = exportData.str;
-		var hiddenDiv = $('<div/>')
-			.css( {
-				height: 1,
-				width: 1,
-				overflow: 'hidden',
-				position: 'fixed',
-				top: 0,
-				left: 0
-			} );
+		_exportData( dt, config, function(err, exportData){
+			if(err){
+				that.processing( false );
 
-		if ( config.customize ) {
-			output = config.customize( output, config );
-		}
+				throw err;
+			}
 
-		var textarea = $('<textarea readonly/>')
-			.val( output )
-			.appendTo( hiddenDiv );
+			var output = exportData.str;
+			var hiddenDiv = $('<div/>')
+				.css( {
+					height: 1,
+					width: 1,
+					overflow: 'hidden',
+					position: 'fixed',
+					top: 0,
+					left: 0
+				} );
 
-		// For browsers that support the copy execCommand, try to use it
-		if ( document.queryCommandSupported('copy') ) {
-			hiddenDiv.appendTo( dt.table().container() );
+			if ( config.customize ) {
+				output = config.customize( output, config );
+			}
+
+			var textarea = $('<textarea readonly/>')
+				.val( output )
+				.appendTo( hiddenDiv );
+
+			// For browsers that support the copy execCommand, try to use it
+			if ( document.queryCommandSupported('copy') ) {
+				hiddenDiv.appendTo( dt.table().container() );
+				textarea[0].focus();
+				textarea[0].select();
+
+				try {
+					var successful = document.execCommand( 'copy' );
+					hiddenDiv.remove();
+
+					if (successful) {
+						dt.buttons.info(
+							dt.i18n( 'buttons.copyTitle', 'Copy to clipboard' ),
+							dt.i18n( 'buttons.copySuccess', {
+								1: 'Copied one row to clipboard',
+								_: 'Copied %d rows to clipboard'
+							}, exportData.rows ),
+							2000
+						);
+
+						that.processing( false );
+						return;
+					}
+				}
+				catch (t) {}
+			}
+
+			// Otherwise we show the text box and instruct the user to use it
+			var message = $('<span>'+dt.i18n( 'buttons.copyKeys',
+					'Press <i>ctrl</i> or <i>\u2318</i> + <i>C</i> to copy the table data<br>to your system clipboard.<br><br>'+
+					'To cancel, click this message or press escape.' )+'</span>'
+				)
+				.append( hiddenDiv );
+
+			dt.buttons.info( dt.i18n( 'buttons.copyTitle', 'Copy to clipboard' ), message, 0 );
+
+			// Select the text so when the user activates their system clipboard
+			// it will copy that text
 			textarea[0].focus();
 			textarea[0].select();
 
-			try {
-				var successful = document.execCommand( 'copy' );
-				hiddenDiv.remove();
+			// Event to hide the message when the user is done
+			var container = $(message).closest('.dt-button-info');
+			var close = function () {
+				container.off( 'click.buttons-copy' );
+				$(document).off( '.buttons-copy' );
+				dt.buttons.info( false );
+			};
 
-				if (successful) {
-					dt.buttons.info(
-						dt.i18n( 'buttons.copyTitle', 'Copy to clipboard' ),
-						dt.i18n( 'buttons.copySuccess', {
-							1: 'Copied one row to clipboard',
-							_: 'Copied %d rows to clipboard'
-						}, exportData.rows ),
-						2000
-					);
-
-					this.processing( false );
-					return;
-				}
-			}
-			catch (t) {}
-		}
-
-		// Otherwise we show the text box and instruct the user to use it
-		var message = $('<span>'+dt.i18n( 'buttons.copyKeys',
-				'Press <i>ctrl</i> or <i>\u2318</i> + <i>C</i> to copy the table data<br>to your system clipboard.<br><br>'+
-				'To cancel, click this message or press escape.' )+'</span>'
-			)
-			.append( hiddenDiv );
-
-		dt.buttons.info( dt.i18n( 'buttons.copyTitle', 'Copy to clipboard' ), message, 0 );
-
-		// Select the text so when the user activates their system clipboard
-		// it will copy that text
-		textarea[0].focus();
-		textarea[0].select();
-
-		// Event to hide the message when the user is done
-		var container = $(message).closest('.dt-button-info');
-		var close = function () {
-			container.off( 'click.buttons-copy' );
-			$(document).off( '.buttons-copy' );
-			dt.buttons.info( false );
-		};
-
-		container.on( 'click.buttons-copy', close );
-		$(document)
-			.on( 'keydown.buttons-copy', function (e) {
-				if ( e.keyCode === 27 ) { // esc
+			container.on( 'click.buttons-copy', close );
+			$(document)
+				.on( 'keydown.buttons-copy', function (e) {
+					if ( e.keyCode === 27 ) { // esc
+						close();
+						that.processing( false );
+					}
+				} )
+				.on( 'copy.buttons-copy cut.buttons-copy', function () {
 					close();
 					that.processing( false );
-				}
-			} )
-			.on( 'copy.buttons-copy cut.buttons-copy', function () {
-				close();
-				that.processing( false );
-			} );
+				} );
+		});
 	},
 
 	exportOptions: {},
@@ -941,40 +958,48 @@ DataTable.ext.buttons.csvHtml5 = {
 	},
 
 	action: function ( e, dt, button, config ) {
+		var that = this;
+
 		this.processing( true );
 
-		// Set the text
-		var output = _exportData( dt, config ).str;
-		var charset = config.charset;
-
-		if ( config.customize ) {
-			output = config.customize( output, config );
-		}
-
-		if ( charset !== false ) {
-			if ( ! charset ) {
-				charset = document.characterSet || document.charset;
+		_exportData( dt, config, function(err, data){
+			if(err){
+				throw err;
 			}
 
-			if ( charset ) {
-				charset = ';charset='+charset;
+			// Set the text
+			var output = data.str;
+			var charset = config.charset;
+
+			if ( config.customize ) {
+				output = config.customize( output, config );
 			}
-		}
-		else {
-			charset = '';
-		}
 
-		if ( config.bom ) {
-			output = '\ufeff' + output;
-		}
+			if ( charset !== false ) {
+				if ( ! charset ) {
+					charset = document.characterSet || document.charset;
+				}
 
-		_saveAs(
-			new Blob( [output], {type: 'text/csv'+charset} ),
-			_filename( config ),
-			true
-		);
+				if ( charset ) {
+					charset = ';charset='+charset;
+				}
+			}
+			else {
+				charset = '';
+			}
 
-		this.processing( false );
+			if ( config.bom ) {
+				output = '\ufeff' + output;
+			}
+
+			_saveAs(
+				new Blob( [output], {type: 'text/csv'+charset} ),
+				_filename( config ),
+				true
+			);
+
+			that.processing( false );
+		});
 	},
 
 	filename: '*',
@@ -1011,199 +1036,205 @@ DataTable.ext.buttons.excelHtml5 = {
 	},
 
 	action: function ( e, dt, button, config ) {
+		var that = this;
+
 		this.processing( true );
 
-		var that = this;
-		var rowPos = 0;
-		var getXml = function ( type ) {
-			var str = excelStrings[ type ];
-
-			//str = str.replace( /xmlns:/g, 'xmlns_' ).replace( /mc:/g, 'mc_' );
-
-			return $.parseXML( str );
-		};
-		var rels = getXml('xl/worksheets/sheet1.xml');
-		var relsGet = rels.getElementsByTagName( "sheetData" )[0];
-
-		var xlsx = {
-			_rels: {
-				".rels": getXml('_rels/.rels')
-			},
-			xl: {
-				_rels: {
-					"workbook.xml.rels": getXml('xl/_rels/workbook.xml.rels')
-				},
-				"workbook.xml": getXml('xl/workbook.xml'),
-				"styles.xml": getXml('xl/styles.xml'),
-				"worksheets": {
-					"sheet1.xml": rels
-				}
-
-			},
-			"[Content_Types].xml": getXml('[Content_Types].xml')
-		};
-
-		var data = dt.buttons.exportData( config.exportOptions );
-		var currentRow, rowNode;
-		var addRow = function ( row ) {
-			currentRow = rowPos+1;
-			rowNode = _createNode( rels, "row", { attr: {r:currentRow} } );
-
-			for ( var i=0, ien=row.length ; i<ien ; i++ ) {
-				// Concat both the Cell Columns as a letter and the Row of the cell.
-				var cellId = createCellPos(i) + '' + currentRow;
-				var cell = null;
-
-				// For null, undefined of blank cell, continue so it doesn't create the _createNode
-				if ( row[i] === null || row[i] === undefined || row[i] === '' ) {
-					continue;
-				}
-
-				row[i] = $.trim( row[i] );
-
-				// Special number formatting options
-				for ( var j=0, jen=_excelSpecials.length ; j<jen ; j++ ) {
-					var special = _excelSpecials[j];
-
-					// TODO Need to provide the ability for the specials to say
-					// if they are returning a string, since at the moment it is
-					// assumed to be a number
-					if ( row[i].match && ! row[i].match(/^0\d+/) && row[i].match( special.match ) ) {
-						var val = row[i].replace(/[^\d\.\-]/g, '');
-
-						if ( special.fmt ) {
-							val = special.fmt( val );
-						}
-
-						cell = _createNode( rels, 'c', {
-							attr: {
-								r: cellId,
-								s: special.style
-							},
-							children: [
-								_createNode( rels, 'v', { text: val } )
-							]
-						} );
-
-						break;
-					}
-				}
-
-				if ( ! cell ) {
-					if ( typeof row[i] === 'number' || (
-						row[i].match &&
-						row[i].match(/^-?\d+(\.\d+)?$/) &&
-						! row[i].match(/^0\d+/) )
-					) {
-						// Detect numbers - don't match numbers with leading zeros
-						// or a negative anywhere but the start
-						cell = _createNode( rels, 'c', {
-							attr: {
-								t: 'n',
-								r: cellId
-							},
-							children: [
-								_createNode( rels, 'v', { text: row[i] } )
-							]
-						} );
-					}
-					else {
-						// String output - replace non standard characters for text output
-						var text = ! row[i].replace ?
-							row[i] :
-							row[i].replace(/[\x00-\x09\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '');
-
-						cell = _createNode( rels, 'c', {
-							attr: {
-								t: 'inlineStr',
-								r: cellId
-							},
-							children:{
-								row: _createNode( rels, 'is', {
-									children: {
-										row: _createNode( rels, 't', {
-											text: text
-										} )
-									}
-								} )
-							}
-						} );
-					}
-				}
-
-				rowNode.appendChild( cell );
+		dt.buttons.exportData( config.exportOptions, function(err, data){
+			if(err){
+				throw err;
 			}
 
-			relsGet.appendChild(rowNode);
-			rowPos++;
-		};
+			var rowPos = 0;
+			var getXml = function ( type ) {
+				var str = excelStrings[ type ];
 
-		$( 'sheets sheet', xlsx.xl['workbook.xml'] ).attr( 'name', _sheetname( config ) );
+				//str = str.replace( /xmlns:/g, 'xmlns_' ).replace( /mc:/g, 'mc_' );
 
-		if ( config.customizeData ) {
-			config.customizeData( data );
-		}
+				return $.parseXML( str );
+			};
+			var rels = getXml('xl/worksheets/sheet1.xml');
+			var relsGet = rels.getElementsByTagName( "sheetData" )[0];
 
-		if ( config.header ) {
-			addRow( data.header, rowPos );
-			$('row c', rels).attr( 's', '2' ); // bold
-		}
+			var xlsx = {
+				_rels: {
+					".rels": getXml('_rels/.rels')
+				},
+				xl: {
+					_rels: {
+						"workbook.xml.rels": getXml('xl/_rels/workbook.xml.rels')
+					},
+					"workbook.xml": getXml('xl/workbook.xml'),
+					"styles.xml": getXml('xl/styles.xml'),
+					"worksheets": {
+						"sheet1.xml": rels
+					}
 
-		for ( var n=0, ie=data.body.length ; n<ie ; n++ ) {
-			addRow( data.body[n], rowPos );
-		}
+				},
+				"[Content_Types].xml": getXml('[Content_Types].xml')
+			};
 
-		if ( config.footer && data.footer ) {
-			addRow( data.footer, rowPos);
-			$('row:last c', rels).attr( 's', '2' ); // bold
-		}
+			var currentRow, rowNode;
+			var addRow = function ( row ) {
+				currentRow = rowPos+1;
+				rowNode = _createNode( rels, "row", { attr: {r:currentRow} } );
 
-		// Set column widths
-		var cols = _createNode( rels, 'cols' );
-		$('worksheet', rels).prepend( cols );
+				for ( var i=0, ien=row.length ; i<ien ; i++ ) {
+					// Concat both the Cell Columns as a letter and the Row of the cell.
+					var cellId = createCellPos(i) + '' + currentRow;
+					var cell = null;
 
-		for ( var i=0, ien=data.header.length ; i<ien ; i++ ) {
-			cols.appendChild( _createNode( rels, 'col', {
-				attr: {
-					min: i+1,
-					max: i+1,
-					width: _excelColWidth( data, i ),
-					customWidth: 1
+					// For null, undefined of blank cell, continue so it doesn't create the _createNode
+					if ( row[i] === null || row[i] === undefined || row[i] === '' ) {
+						continue;
+					}
+
+					row[i] = $.trim( row[i] );
+
+					// Special number formatting options
+					for ( var j=0, jen=_excelSpecials.length ; j<jen ; j++ ) {
+						var special = _excelSpecials[j];
+
+						// TODO Need to provide the ability for the specials to say
+						// if they are returning a string, since at the moment it is
+						// assumed to be a number
+						if ( row[i].match && ! row[i].match(/^0\d+/) && row[i].match( special.match ) ) {
+							var val = row[i].replace(/[^\d\.\-]/g, '');
+
+							if ( special.fmt ) {
+								val = special.fmt( val );
+							}
+
+							cell = _createNode( rels, 'c', {
+								attr: {
+									r: cellId,
+									s: special.style
+								},
+								children: [
+									_createNode( rels, 'v', { text: val } )
+								]
+							} );
+
+							break;
+						}
+					}
+
+					if ( ! cell ) {
+						if ( typeof row[i] === 'number' || (
+							row[i].match &&
+							row[i].match(/^-?\d+(\.\d+)?$/) &&
+							! row[i].match(/^0\d+/) )
+						) {
+							// Detect numbers - don't match numbers with leading zeros
+							// or a negative anywhere but the start
+							cell = _createNode( rels, 'c', {
+								attr: {
+									t: 'n',
+									r: cellId
+								},
+								children: [
+									_createNode( rels, 'v', { text: row[i] } )
+								]
+							} );
+						}
+						else {
+							// String output - replace non standard characters for text output
+							var text = ! row[i].replace ?
+								row[i] :
+								row[i].replace(/[\x00-\x09\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '');
+
+							cell = _createNode( rels, 'c', {
+								attr: {
+									t: 'inlineStr',
+									r: cellId
+								},
+								children:{
+									row: _createNode( rels, 'is', {
+										children: {
+											row: _createNode( rels, 't', {
+												text: text
+											} )
+										}
+									} )
+								}
+							} );
+						}
+					}
+
+					rowNode.appendChild( cell );
 				}
-			} ) );
-		}
 
-		// Let the developer customise the document if they want to
-		if ( config.customize ) {
-			config.customize( xlsx );
-		}
+				relsGet.appendChild(rowNode);
+				rowPos++;
+			};
 
-		var jszip = _jsZip();
-		var zip = new jszip();
-		var zipConfig = {
-			type: 'blob',
-			mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-		};
+			$( 'sheets sheet', xlsx.xl['workbook.xml'] ).attr( 'name', _sheetname( config ) );
 
-		_addToZip( zip, xlsx );
+			if ( config.customizeData ) {
+				config.customizeData( data );
+			}
 
-		if ( zip.generateAsync ) {
-			// JSZip 3+
-			zip
-				.generateAsync( zipConfig )
-				.then( function ( blob ) {
-					_saveAs( blob, _filename( config ) );
-					that.processing( false );
-				} );
-		}
-		else {
-			// JSZip 2.5
-			_saveAs(
-				zip.generate( zipConfig ),
-				_filename( config )
-			);
-			this.processing( false );
-		}
+			if ( config.header ) {
+				addRow( data.header, rowPos );
+				$('row c', rels).attr( 's', '2' ); // bold
+			}
+
+			for ( var n=0, ie=data.body.length ; n<ie ; n++ ) {
+				addRow( data.body[n], rowPos );
+			}
+
+			if ( config.footer && data.footer ) {
+				addRow( data.footer, rowPos);
+				$('row:last c', rels).attr( 's', '2' ); // bold
+			}
+
+			// Set column widths
+			var cols = _createNode( rels, 'cols' );
+			$('worksheet', rels).prepend( cols );
+
+			for ( var i=0, ien=data.header.length ; i<ien ; i++ ) {
+				cols.appendChild( _createNode( rels, 'col', {
+					attr: {
+						min: i+1,
+						max: i+1,
+						width: _excelColWidth( data, i ),
+						customWidth: 1
+					}
+				} ) );
+			}
+
+			// Let the developer customise the document if they want to
+			if ( config.customize ) {
+				config.customize( xlsx );
+			}
+
+			var jszip = _jsZip();
+			var zip = new jszip();
+			var zipConfig = {
+				type: 'blob',
+				mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+			};
+
+			_addToZip( zip, xlsx );
+
+			if ( zip.generateAsync ) {
+				// JSZip 3+
+				zip
+					.generateAsync( zipConfig )
+					.then( function ( blob ) {
+						_saveAs( blob, _filename( config ) );
+						that.processing( false );
+					} );
+			}
+			else {
+				// JSZip 2.5
+				_saveAs(
+					zip.generate( zipConfig ),
+					_filename( config )
+				);
+				that.processing( false );
+			}
+		});
 	},
 
 	filename: '*',
@@ -1232,114 +1263,116 @@ DataTable.ext.buttons.pdfHtml5 = {
 	},
 
 	action: function ( e, dt, button, config ) {
+		var that = this;
+
 		this.processing( true );
 
-		var that = this;
-		var data = dt.buttons.exportData( config.exportOptions );
-		var rows = [];
+		dt.buttons.exportData( config.exportOptions, function(err, data){
+			var rows = [];
 
-		if ( config.header ) {
-			rows.push( $.map( data.header, function ( d ) {
-				return {
-					text: typeof d === 'string' ? d : d+'',
-					style: 'tableHeader'
-				};
-			} ) );
-		}
-
-		for ( var i=0, ien=data.body.length ; i<ien ; i++ ) {
-			rows.push( $.map( data.body[i], function ( d ) {
-				return {
-					text: typeof d === 'string' ? d : d+'',
-					style: i % 2 ? 'tableBodyEven' : 'tableBodyOdd'
-				};
-			} ) );
-		}
-
-		if ( config.footer && data.footer) {
-			rows.push( $.map( data.footer, function ( d ) {
-				return {
-					text: typeof d === 'string' ? d : d+'',
-					style: 'tableFooter'
-				};
-			} ) );
-		}
-
-		var doc = {
-			pageSize: config.pageSize,
-			pageOrientation: config.orientation,
-			content: [
-				{
-					table: {
-						headerRows: 1,
-						body: rows
-					},
-					layout: 'noBorders'
-				}
-			],
-			styles: {
-				tableHeader: {
-					bold: true,
-					fontSize: 11,
-					color: 'white',
-					fillColor: '#2d4154',
-					alignment: 'center'
-				},
-				tableBodyEven: {},
-				tableBodyOdd: {
-					fillColor: '#f3f3f3'
-				},
-				tableFooter: {
-					bold: true,
-					fontSize: 11,
-					color: 'white',
-					fillColor: '#2d4154'
-				},
-				title: {
-					alignment: 'center',
-					fontSize: 15
-				},
-				message: {}
-			},
-			defaultStyle: {
-				fontSize: 10
+			if ( config.header ) {
+				rows.push( $.map( data.header, function ( d ) {
+					return {
+						text: typeof d === 'string' ? d : d+'',
+						style: 'tableHeader'
+					};
+				} ) );
 			}
-		};
 
-		if ( config.message ) {
-			doc.content.unshift( {
-				text: typeof config.message == 'function' ? config.message(dt, button, config) : config.message,
-				style: 'message',
-				margin: [ 0, 0, 0, 12 ]
-			} );
-		}
+			for ( var i=0, ien=data.body.length ; i<ien ; i++ ) {
+				rows.push( $.map( data.body[i], function ( d ) {
+					return {
+						text: typeof d === 'string' ? d : d+'',
+						style: i % 2 ? 'tableBodyEven' : 'tableBodyOdd'
+					};
+				} ) );
+			}
 
-		if ( config.title ) {
-			doc.content.unshift( {
-				text: _title( config, false ),
-				style: 'title',
-				margin: [ 0, 0, 0, 12 ]
-			} );
-		}
+			if ( config.footer && data.footer) {
+				rows.push( $.map( data.footer, function ( d ) {
+					return {
+						text: typeof d === 'string' ? d : d+'',
+						style: 'tableFooter'
+					};
+				} ) );
+			}
 
-		if ( config.customize ) {
-			config.customize( doc, config );
-		}
+			var doc = {
+				pageSize: config.pageSize,
+				pageOrientation: config.orientation,
+				content: [
+					{
+						table: {
+							headerRows: 1,
+							body: rows
+						},
+						layout: 'noBorders'
+					}
+				],
+				styles: {
+					tableHeader: {
+						bold: true,
+						fontSize: 11,
+						color: 'white',
+						fillColor: '#2d4154',
+						alignment: 'center'
+					},
+					tableBodyEven: {},
+					tableBodyOdd: {
+						fillColor: '#f3f3f3'
+					},
+					tableFooter: {
+						bold: true,
+						fontSize: 11,
+						color: 'white',
+						fillColor: '#2d4154'
+					},
+					title: {
+						alignment: 'center',
+						fontSize: 15
+					},
+					message: {}
+				},
+				defaultStyle: {
+					fontSize: 10
+				}
+			};
 
-		var pdf = _pdfMake().createPdf( doc );
+			if ( config.message ) {
+				doc.content.unshift( {
+					text: typeof config.message == 'function' ? config.message(dt, button, config) : config.message,
+					style: 'message',
+					margin: [ 0, 0, 0, 12 ]
+				} );
+			}
 
-		if ( config.download === 'open' && ! _isDuffSafari() ) {
-			pdf.open();
-			this.processing( false );
-		}
-		else {
-			pdf.getBuffer( function (buffer) {
-				var blob = new Blob( [buffer], {type:'application/pdf'} );
+			if ( config.title ) {
+				doc.content.unshift( {
+					text: _title( config, false ),
+					style: 'title',
+					margin: [ 0, 0, 0, 12 ]
+				} );
+			}
 
-				_saveAs( blob, _filename( config ) );
+			if ( config.customize ) {
+				config.customize( doc, config );
+			}
+
+			var pdf = _pdfMake().createPdf( doc );
+
+			if ( config.download === 'open' && ! _isDuffSafari() ) {
+				pdf.open();
 				that.processing( false );
-			} );
-		}
+			}
+			else {
+				pdf.getBuffer( function (buffer) {
+					var blob = new Blob( [buffer], {type:'application/pdf'} );
+
+					_saveAs( blob, _filename( config ) );
+					that.processing( false );
+				} );
+			}
+		});
 	},
 
 	title: '*',
